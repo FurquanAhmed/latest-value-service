@@ -10,28 +10,19 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * This class is the service interface and implementation in a single Java class.
  *
- * API methods:
- *  - void startBatch(String batchId)
- *  - void uploadChunk(String batchId, List<PriceRecord> records)
- *  - void completeBatch(String batchId)
- *  - void cancelBatch(String batchId)
- *  - Map<String, PriceRecord> getLatest(Collection<String> ids)
  *
  * Design notes:
  *  - committed snapshots are stored in an AtomicReference to an immutable Map. Swapping the reference
  *    guarantees atomic visibility of an entire batch upon commit.
- *  - active batches are stored in a ConcurrentHashMap. Each Batch keeps a ConcurrentHashMap of id -> PriceRecord
- *    representing the best (latest-asOf) record within that batch.
- *  - chunk uploads merge into the batch map using compute(...) comparing asOf.
+ *  - active batches are stored in a ConcurrentHashMap of id -> PriceRecord
+ *    representing the best record within that batch.
+ *  - chunk uploads merge into the batch map comparing asOf.
  *  - All public methods are thread-safe.
  *
  * PriceRecord is an immutable POJO nested for convenience.
  */
 public class LatestValueService {
 
-    /**
-     * Public immutable price record.
-     */
     public static final class PriceRecord {
         private final String id;
         private final Instant asOf;
@@ -41,7 +32,7 @@ public class LatestValueService {
             if (id == null || asOf == null) throw new IllegalArgumentException("id and asOf required");
             this.id = id;
             this.asOf = asOf;
-            // shallow copy to encourage immutability (not defensive deep copy for simplicity)
+            // shallow copy 
             this.payload = payload == null ? Collections.emptyMap() : Collections.unmodifiableMap(new HashMap<>(payload));
         }
 
@@ -63,20 +54,19 @@ public class LatestValueService {
         }
     }
 
-    // Represent batch states simply: PENDING until completed or cancelled.
+    // Represent batch states 
     private static final class Batch {
         final ConcurrentHashMap<String, PriceRecord> map = new ConcurrentHashMap<>();
     }
 
-    // Active batches keyed by batchId
+    // Active batches 
     private final ConcurrentHashMap<String, Batch> batches = new ConcurrentHashMap<>();
 
-    // Committed snapshot: id -> PriceRecord (the latest committed)
+    // Committed snapshot
     private final AtomicReference<Map<String, PriceRecord>> committed = new AtomicReference<>(Collections.emptyMap());
 
     /**
-     * Start a batch. If batch already exists, this is a no-op.
-     * Resilient: calling start multiple times is safe.
+     * Start a batch. 
      */
     public void startBatch(String batchId) {
         Objects.requireNonNull(batchId, "batchId required");
@@ -84,8 +74,7 @@ public class LatestValueService {
     }
 
     /**
-     * Upload a chunk of records for given batchId. Chunks are merged in parallel safely.
-     * If the batch does not exist we create it implicitly (resilience).
+     * Upload a chunk of records for given batchId. 
      */
     public void uploadChunk(String batchId, Collection<PriceRecord> records) {
         Objects.requireNonNull(batchId, "batchId required");
@@ -103,26 +92,22 @@ public class LatestValueService {
     }
 
     /**
-     * Complete the batch: atomically make all prices in the batch visible to consumers.
-     * If batch doesn't exist, this is a no-op (resilient).
+     * Complete the batch:
      * If multiple threads attempt to complete the same batch concurrently, only the first will effectively commit.
      */
     public void completeBatch(String batchId) {
         Objects.requireNonNull(batchId, "batchId required");
         Batch batch = batches.remove(batchId);
-        if (batch == null) return; // nothing to complete
+        if (batch == null) return; 
 
-        // Create a new committed map by copying current committed and applying updates from the batch.
-        // This is computed locally and then swapped atomically into committed reference. This guarantees
-        // that consumers see either the entire previous state or the entire new state, never a partial application.
         Map<String, PriceRecord> before;
         Map<String, PriceRecord> after;
         while (true) {
             before = committed.get();
-            // shallow copy: new HashMap based on previous committed snapshot
+            // shallow copy
             HashMap<String, PriceRecord> copy = new HashMap<>(before);
 
-            // Apply batch updates: for each id in batch, choose the later of (existing committed, batch)
+            // Apply batch updates
             for (Map.Entry<String, PriceRecord> e : batch.map.entrySet()) {
                 String id = e.getKey();
                 PriceRecord candidate = e.getValue();
@@ -136,12 +121,12 @@ public class LatestValueService {
             if (committed.compareAndSet(before, after)) {
                 break;
             }
-            // else: some other thread committed concurrently; retry with new 'before' snapshot
+            // else
         }
     }
 
     /**
-     * Cancel batch: discard any uploaded but uncommitted data. If batch doesn't exist, no-op.
+     * Cancel batch
      */
     public void cancelBatch(String batchId) {
         Objects.requireNonNull(batchId, "batchId required");
@@ -149,9 +134,7 @@ public class LatestValueService {
     }
 
     /**
-     * Consumer API: get the latest (committed) records for given ids.
-     * Returns a map id -> PriceRecord containing only entries that are present in committed snapshot.
-     * Consumers will never see uncommitted/partial batches because they only read the committed snapshot.
+     * Consumer API
      */
     public Map<String, PriceRecord> getLatest(Collection<String> ids) {
         Objects.requireNonNull(ids, "ids required");
@@ -164,9 +147,6 @@ public class LatestValueService {
         return out;
     }
 
-    /**
-     * Convenience: get all committed entries (for tests/debug)
-     */
     public Map<String, PriceRecord> getAllCommitted() {
         return committed.get();
     }
